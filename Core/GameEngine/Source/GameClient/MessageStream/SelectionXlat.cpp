@@ -56,6 +56,7 @@
 #include "GameClient/SelectionXlat.h"
 #include "GameClient/TerrainVisual.h"
 
+#include <climits>
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
@@ -946,6 +947,12 @@ GameMessageDisposition SelectionTranslator::onMouseLeftClick(MAYBE_UNUSED const 
 
 			if (drawToSelect && objToAppend != INVALID_ID)
 			{
+				// The argument count is one byte, including the initial replace-selection flag.
+				if (newMsg->getArgumentCount() == UCHAR_MAX)
+				{
+					newMsg = TheMessageStream->appendMessage(GameMessage::MSG_CREATE_SELECTED_GROUP_NO_SOUND);
+					newMsg->appendBooleanArgument(false);
+				}
 				newMsg->appendObjectIDArgument(objToAppend);
 				TheInGameUI->selectDrawable(drawToSelect);
 				++newDrawablesSelected;
