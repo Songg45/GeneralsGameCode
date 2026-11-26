@@ -53,9 +53,13 @@ def block(source, kind, name):
     return one_match(header + r"[\s\S]*?^End\b", source, f"{kind} {name}")
 
 
-def scale_field(source, field, factor):
+def numeric_field(source, field):
     pattern = rf"^[ \t]*{field}[ \t]*=[ \t]*(\d+(?:\.\d+)?)(?=[ \t;\r\n]|$)"
-    match = one_match(pattern, source, field)
+    return one_match(pattern, source, field)
+
+
+def scale_field(source, field, factor):
+    match = numeric_field(source, field)
     value = Decimal(match[1]) * factor
     return source[:match.start(1)] + format(value, "f") + source[match.end(1):]
 
@@ -64,7 +68,8 @@ def tune(files):
     aircraft = files[AIRCRAFT]
     weapons = files[WEAPONS]
     plane = block(aircraft, "Object", "SupW_AmericaJetAurora")
-    tuned_plane = scale_field(plane[0], "BuildTime", Decimal("0.5"))
+    start, end = numeric_field(plane[0], "BuildTime").span(1)
+    tuned_plane = plane[0][:start] + "5.0" + plane[0][end:]
 
     # Other factions use these locomotors too. Give the Alpha private copies.
     locomotors = []
