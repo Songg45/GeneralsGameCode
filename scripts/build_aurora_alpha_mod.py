@@ -5,7 +5,7 @@ Use the game installation as the output directory to enable the tuning on startu
 
 import argparse
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import struct
 from tempfile import TemporaryDirectory
@@ -17,6 +17,7 @@ MOVEMENT = r"Data\INI\Locomotor.ini"
 ALPHA_MOVEMENT = r"Data\INI\Locomotor\AuroraAlpha.ini"
 MOD_NAME = "00_AuroraAlphaTuning.big"
 ALPHA_STAT_MULTIPLIER = 8
+MOD_DATA = Path(__file__).resolve().parents[1] / "mods" / "aurora_alpha"
 
 
 def read_ini_files(archive):
@@ -91,11 +92,22 @@ def tune(files):
     for field in ("PrimaryDamage", "PrimaryDamageRadius", "ShockWaveRadius"):
         tuned_blast = scale_field(tuned_blast, field, ALPHA_STAT_MULTIPLIER)
 
-    return {
+    # The private detonation weapon is shared by the dropped bomb and the death blast.
+    tuned_blast = tuned_blast.removesuffix("End") + "  FireFX = SupW_FX_AlphaFuelAirBlast\r\nEnd"
+    tuned_plane = tuned_plane.removesuffix("End") + (
+        "  Behavior = CreateObjectDie ModuleTag_AlphaDeathBlast\r\n"
+        "    CreationList = SupW_OCL_AlphaDeathBlast\r\n"
+        "  End\r\nEnd"
+    )
+    result = {
         AIRCRAFT: aircraft[:plane.start()] + tuned_plane + aircraft[plane.end():],
         WEAPONS: weapons[:blast.start()] + tuned_blast + weapons[blast.end():],
         ALPHA_MOVEMENT: "\r\n\r\n".join(locomotors) + "\r\n",
     }
+    for category in ("FXList", "Object", "ObjectCreationList", "ParticleSystem"):
+        path = Path("Data", "INI", category, "AlphaFuelAirBlast.ini")
+        result[str(PureWindowsPath(*path.parts))] = (MOD_DATA / path).read_text(encoding="ascii")
+    return result
 
 
 def build_archive(files):
