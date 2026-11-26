@@ -1,4 +1,4 @@
-"""Build 00_AuroraAlphaTuning.big from a local Zero Hour INIZH.big.
+"""Build the Aurora Alpha and Super Supply Drop mod from a local Zero Hour INIZH.big.
 
 Use the game installation as the output directory to enable the tuning on startup.
 """
@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 
 
 AIRCRAFT = r"Data\INI\Object\SuperWeaponGeneral.ini"
+CRATES = r"Data\INI\Crate.ini"
 WEAPONS = r"Data\INI\Weapon.ini"
 WEAPON_OBJECTS = r"Data\INI\Object\WeaponObjects.ini"
 MOVEMENT = r"Data\INI\Locomotor.ini"
@@ -95,7 +96,7 @@ def read_ini_files(archive):
     if data[:4] != b"BIGF":
         raise ValueError(f"{archive} is not a BIGF archive")
     count, index_end = struct.unpack_from(">II", data, 8)
-    wanted = {name.lower(): name for name in (AIRCRAFT, WEAPONS, WEAPON_OBJECTS, MOVEMENT)}
+    wanted = {name.lower(): name for name in (AIRCRAFT, WEAPONS, WEAPON_OBJECTS, MOVEMENT, CRATES)}
     files = {}
     pos = 16
     for _ in range(count):
@@ -136,6 +137,42 @@ def scale_field(source, field, factor):
     return source[:match.start(1)] + format(value, "f") + source[match.end(1):]
 
 
+def set_number(source, field, value):
+    start, end = numeric_field(source, field).span(1)
+    return source[:start] + str(value) + source[end:]
+
+
+def add_super_supply_drop(files, result):
+    general = result[AIRCRAFT]
+    zone = block(general, "Object", "SupW_AmericaSupplyDropZone")
+    tuned = set_number(zone[0], "MinDelay", 10000)
+    tuned = set_number(tuned, "MaxDelay", 10000)
+    ocl = one_match(r"^([ \t]*OCL[ \t]*=[ \t]*)OCL_AmericaSupplyDropZoneCrateDrop\b", tuned, "drop zone OCL")
+    tuned = tuned[:ocl.start()] + ocl[1] + "SupW_OCL_SuperSupplyDrop" + tuned[ocl.end():]
+    result[AIRCRAFT] = general[:zone.start()] + tuned + general[zone.end():]
+
+    crate = block(files[CRATES], "Object", "SupplyDropZoneCrate")[0]
+    crate = set_number(crate.replace("SupplyDropZoneCrate", "SupW_SupplyCashCrate", 1), "MoneyProvided", 10000)
+    # Keep the value at $10,000 per crate even after buying Supply Lines.
+    boost = one_match(r"^[ \t]*UpgradedBoost[ \t]*=[^\n]*\n", crate, "crate upgrade boost")
+    crate = crate[:boost.start()] + crate[boost.end():]
+
+    # Follow sustained Gatling fire with a real Spectre howitzer shell from the firing aircraft.
+    gun = block(files[WEAPONS], "Weapon", "SpectreGattlingGun")[0]
+    gun = set_number(gun.replace("SpectreGattlingGun", "SupW_SupplyGunshipCannon", 1), "AttackRange", 360)
+    gun = gun.removesuffix("End") + (
+        "  HistoricBonusTime = 1000\r\n  HistoricBonusCount = 5\r\n"
+        "  HistoricBonusRadius = 35\r\n  HistoricBonusWeapon = SpectreHowitzerGun\r\nEnd"
+    )
+    result[WEAPONS] += "\r\n" + gun + "\r\n"
+    for category in ("Object", "ObjectCreationList"):
+        path = Path("Data", "INI", category, "SuperSupplyDrop.ini")
+        data = (MOD_DATA / path).read_text(encoding="ascii")
+        if category == "Object":
+            data += "\r\n" + crate + "\r\n"
+        result[str(PureWindowsPath(*path.parts))] = data
+
+
 def tune_weapon_objects(objects):
     # Impact can occur before a new projectile or gas object registers with the shroud.
     # Position-based FX still respect fog of war and work on the first visible frame.
@@ -160,8 +197,7 @@ def tune(files):
     aircraft = files[AIRCRAFT]
     weapons = files[WEAPONS]
     plane = block(aircraft, "Object", "SupW_AmericaJetAurora")
-    start, end = numeric_field(plane[0], "BuildTime").span(1)
-    tuned_plane = plane[0][:start] + "1.0" + plane[0][end:]
+    tuned_plane = set_number(plane[0], "BuildTime", "1.0")
 
     # Other factions use these locomotors too. Give the Alpha private copies.
     locomotors = []
@@ -212,6 +248,7 @@ def tune(files):
         result[str(PureWindowsPath(*path.parts))] = text
     result[r"Art\Textures\SupWAlphaFireRing.tga"] = fire_ring_texture()
     result[r"Art\Textures\SupWAlphaFuelCloud.tga"] = fuel_cloud_texture()
+    add_super_supply_drop(files, result)
     return result
 
 
