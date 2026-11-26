@@ -5,6 +5,7 @@ Use the game installation as the output directory to enable the tuning on startu
 
 import argparse
 from decimal import Decimal
+import math
 from pathlib import Path, PureWindowsPath
 import re
 import struct
@@ -18,6 +19,36 @@ ALPHA_MOVEMENT = r"Data\INI\Locomotor\AuroraAlpha.ini"
 MOD_NAME = "00_AuroraAlphaTuning.big"
 ALPHA_STAT_MULTIPLIER = 8
 MOD_DATA = Path(__file__).resolve().parents[1] / "mods" / "aurora_alpha"
+RING_TEXTURE_SIZE = 256
+RING_FRONT_RADIUS = 112
+
+
+def fire_ring_texture():
+    """Make an additive TGA with the bright flame front at 112 of 256 texels."""
+    side = RING_TEXTURE_SIZE
+    pixels = bytearray(side * side * 3)
+    for y in range(side):
+        dy = y + 0.5 - side / 2
+        for x in range(side):
+            dx = x + 0.5 - side / 2
+            depth = RING_FRONT_RADIUS - math.hypot(dx, dy)
+            if depth <= -0.5 or depth >= 32:
+                continue
+
+            # Vary the flame tips on the inside while the leading edge stays circular.
+            angle = math.atan2(dy, dx)
+            thickness = 18 + 6 * math.sin(11 * angle) + 4 * math.sin(23 * angle + 0.6)
+            heat = max(0.0, 1 - max(0.0, depth - 1) / thickness)
+            edge = min(1.0, depth + 0.5)
+            red = round(255 * edge * heat)
+            green = round(235 * edge * heat ** 2)
+            blue = round(160 * edge * heat ** 4)
+            offset = (y * side + x) * 3
+            pixels[offset:offset + 3] = bytes((blue, green, red))
+
+    # Uncompressed, top-origin, 24-bit BGR. Black is transparent with the additive shader.
+    header = struct.pack("<BBB5xHHHHBB", 0, 0, 2, 0, 0, side, side, 24, 0x20)
+    return header + pixels
 
 
 def read_ini_files(archive):
@@ -106,12 +137,22 @@ def tune(files):
     }
     for category in ("FXList", "Object", "ObjectCreationList", "ParticleSystem"):
         path = Path("Data", "INI", category, "AlphaFuelAirBlast.ini")
-        result[str(PureWindowsPath(*path.parts))] = (MOD_DATA / path).read_text(encoding="ascii")
+        text = (MOD_DATA / path).read_text(encoding="ascii")
+        if category == "ParticleSystem":
+            radius = Decimal(numeric_field(tuned_blast, "PrimaryDamageRadius")[1])
+            full_width = radius * RING_TEXTURE_SIZE / RING_FRONT_RADIUS
+            start_width = full_width / 20
+            # With 0.75 damping, the total growth is four times the initial growth rate.
+            growth = (full_width - start_width) / 4
+            text = text.replace("@START_WIDTH@", format(start_width, "f"))
+            text = text.replace("@GROWTH@", format(growth, "f"))
+        result[str(PureWindowsPath(*path.parts))] = text
+    result[r"Art\Textures\SupWAlphaFireRing.tga"] = fire_ring_texture()
     return result
 
 
 def build_archive(files):
-    entries = [(path.encode("ascii") + b"\0", data.encode("latin-1"))
+    entries = [(path.encode("ascii") + b"\0", data.encode("latin-1") if isinstance(data, str) else data)
                for path, data in files.items()]
     index_end = 16 + sum(8 + len(path) for path, _ in entries)
     offset = index_end
