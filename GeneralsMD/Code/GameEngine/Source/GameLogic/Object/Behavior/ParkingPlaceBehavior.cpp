@@ -141,7 +141,6 @@ void ParkingPlaceBehavior::purgeDead()
 {
 	buildInfo();
 
-	ProductionUpdateInterface* pu = getObject()->getProductionUpdateInterface();
 	{
 		for (std::vector<ParkingPlaceInfo>::iterator it = m_spaces.begin(); it != m_spaces.end(); ++it)
 		{
@@ -153,8 +152,7 @@ void ParkingPlaceBehavior::purgeDead()
 					it->m_objectInSpace = INVALID_ID;
 					it->m_reservedForExit = false;
 					it->m_postponedRunwayReservationForTakeoff = false;
-					if (pu)
-						pu->setHoldDoorOpen(it->m_door, false);
+					releaseDoorIfEmpty(it->m_door);
 				}
 			}
 		}
@@ -261,18 +259,52 @@ ParkingPlaceBehavior::ParkingPlaceInfo* ParkingPlaceBehavior::findPPI(ObjectID i
 }
 
 //-------------------------------------------------------------------------------------------------
-ParkingPlaceBehavior::ParkingPlaceInfo* ParkingPlaceBehavior::findEmptyPPI()
+UnsignedInt ParkingPlaceBehavior::physicalSpaceCount() const
 {
-	if (!m_gotInfo)
-		return nullptr;
+	const ParkingPlaceBehaviorModuleData* data = getParkingPlaceBehaviorModuleData();
+	return m_gotInfo ? data->m_numRows * data->m_numCols : 0;
+}
 
-	for (std::vector<ParkingPlaceInfo>::iterator it = m_spaces.begin(); it != m_spaces.end(); ++it)
+Bool ParkingPlaceBehavior::canShareParking(const ThingTemplate* aircraft) const
+{
+	return physicalSpaceCount() != 0 &&
+		aircraft->getName().compareNoCase("SupW_AmericaJetAurora") == 0 &&
+		getObject()->getTemplate()->getName().compareNoCase("SupW_AmericaAirfield") == 0;
+}
+
+ParkingPlaceBehavior::ParkingPlaceInfo* ParkingPlaceBehavior::findEmptyPPI(Bool includeShared)
+{
+	const size_t count = includeShared ? m_spaces.size() : physicalSpaceCount();
+	for (size_t i = 0; i < count; ++i)
 	{
-		if (it->m_objectInSpace == INVALID_ID && it->m_reservedForExit == false)
-			return &(*it);
+		if (m_spaces[i].m_objectInSpace == INVALID_ID && !m_spaces[i].m_reservedForExit)
+			return &m_spaces[i];
 	}
-
 	return nullptr;
+}
+
+ParkingPlaceBehavior::ParkingPlaceInfo& ParkingPlaceBehavior::appendSharedSpace()
+{
+	// Repeat the real parking bones and runway assignments. Each jet still owns its own reservation.
+	ParkingPlaceInfo space = m_spaces[m_spaces.size() % physicalSpaceCount()];
+	space.m_objectInSpace = INVALID_ID;
+	space.m_reservedForExit = false;
+	space.m_postponedRunwayReservationForTakeoff = false;
+	m_spaces.push_back(space);
+	return m_spaces.back();
+}
+
+void ParkingPlaceBehavior::releaseDoorIfEmpty(ExitDoorType door)
+{
+	if (m_spaces.size() > physicalSpaceCount())
+	{
+		for (size_t i = 0; i < m_spaces.size(); ++i)
+			if (m_spaces[i].m_door == door && m_spaces[i].m_objectInSpace != INVALID_ID)
+				return;
+	}
+	ProductionUpdateInterface* production = getObject()->getProductionUpdateInterface();
+	if (production)
+		production->setHoldDoorOpen(door, false);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -292,12 +324,12 @@ Bool ParkingPlaceBehavior::hasAvailableSpaceFor(const ThingTemplate* thing) cons
 	if (!m_gotInfo)	// degenerate case, shouldn't happen, but just in case...
 		return false;
 
-	if (thing->isKindOf(KINDOF_PRODUCED_AT_HELIPAD))
+	if (thing->isKindOf(KINDOF_PRODUCED_AT_HELIPAD) || canShareParking(thing))
 		return true;
 
-	for (std::vector<ParkingPlaceInfo>::const_iterator it = m_spaces.begin(); it != m_spaces.end(); ++it)
+	for (UnsignedInt i = 0; i < physicalSpaceCount(); ++i)
 	{
-		ObjectID id = it->m_objectInSpace;
+		ObjectID id = m_spaces[i].m_objectInSpace;
 
 		// since this is const, and we can't purge the dead safely, just peek and see if we have a dead thing.
 		if (id != INVALID_ID)
@@ -309,7 +341,7 @@ Bool ParkingPlaceBehavior::hasAvailableSpaceFor(const ThingTemplate* thing) cons
 			}
 		}
 
-		if (id == INVALID_ID && it->m_reservedForExit == false)
+		if (id == INVALID_ID && !m_spaces[i].m_reservedForExit)
 		{
 			return true;
 		}
@@ -329,7 +361,11 @@ Bool ParkingPlaceBehavior::reserveSpace(ObjectID id, Real parkingOffset, Parking
 	ParkingPlaceInfo* ppi = findPPI(id);
 	if (ppi == nullptr)
 	{
-		ppi = findEmptyPPI();
+		const Object* jet = TheGameLogic->findObjectByID(id);
+		const Bool shared = jet && canShareParking(jet->getTemplate());
+		ppi = findEmptyPPI(shared);
+		if (ppi == nullptr && shared)
+			ppi = &appendSharedSpace();
 		if (ppi == nullptr)
 		{
 			DEBUG_CRASH(("No parking places!"));
@@ -421,7 +457,6 @@ void ParkingPlaceBehavior::releaseSpace(ObjectID id)
 	buildInfo();
 	purgeDead();
 
-	ProductionUpdateInterface* pu = getObject()->getProductionUpdateInterface();
 	for (std::vector<ParkingPlaceInfo>::iterator it = m_spaces.begin(); it != m_spaces.end(); ++it)
 	{
 		if (it->m_objectInSpace == id)
@@ -429,8 +464,7 @@ void ParkingPlaceBehavior::releaseSpace(ObjectID id)
 			it->m_objectInSpace = INVALID_ID;
 			it->m_reservedForExit = false;
 			it->m_postponedRunwayReservationForTakeoff = false;
-			if (pu)
-				pu->setHoldDoorOpen(it->m_door, false);
+			releaseDoorIfEmpty(it->m_door);
 			break;
 		}
 	}
@@ -778,7 +812,9 @@ ExitDoorType ParkingPlaceBehavior::reserveDoorForExit( const ThingTemplate* objT
 		return ppi->m_door;
 	}
 
-	return DOOR_NONE_AVAILABLE;
+	// All physical doors may already be reserved by earlier orders. Assign an overflow
+	// Alpha its own parking record at spawn, so cancelling it cannot release another jet's door.
+	return canShareParking(objType) ? DOOR_NONE_NEEDED : DOOR_NONE_AVAILABLE;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -831,7 +867,7 @@ void ParkingPlaceBehavior::exitObjectViaDoor( Object *newObj, ExitDoorType exitD
 	else
 	{
 		CRCDEBUG_LOG(("Produced at hangar (door = %d)", exitDoor));
-		DEBUG_ASSERTCRASH(exitDoor != DOOR_NONE_NEEDED, ("Hmm, unlikely"));
+		DEBUG_ASSERTCRASH(exitDoor != DOOR_NONE_NEEDED || canShareParking(newObj->getTemplate()), ("Jet needs a parking reservation"));
 		if (!reserveSpace(newObj->getID(), parkingOffset, &ppinfo)) //&loc, &orient, nullptr, nullptr, nullptr, nullptr, &hangarInternal, &hangOrient))
 		{
 			DEBUG_CRASH(("no spaces available, how did we get here?"));
@@ -944,18 +980,30 @@ void ParkingPlaceBehavior::crc( Xfer *xfer )
 
 }
 
+static UnsignedInt xferParkingCount(Xfer* xfer, XferVersion version, UnsignedInt count)
+{
+	if (version >= 4)
+		xfer->xferUnsignedInt(&count);
+	else
+	{
+		UnsignedByte legacyCount = static_cast<UnsignedByte>(count);
+		xfer->xferUnsignedByte(&legacyCount);
+		count = legacyCount;
+	}
+	return count;
+}
+
 // ------------------------------------------------------------------------------------------------
-/** Xfer method
-	* Version Info:
-	* 1: Initial version */
+// Version 4 adds shared parking records and widens the space and healing counts.
 // ------------------------------------------------------------------------------------------------
 void ParkingPlaceBehavior::xfer( Xfer *xfer )
 {
-	Int i;
+	UnsignedInt i;
 
 	// version
-	const XferVersion currentVersion = 3;
-	XferVersion version = currentVersion;
+	const XferVersion currentVersion = 4;
+	XferVersion version = (m_spaces.size() > physicalSpaceCount() ||
+		m_spaces.size() > 255 || m_healing.size() > 255) ? 4 : 3;
 	xfer->xferVersion( &version, currentVersion );
 
 	// extend base class
@@ -968,8 +1016,7 @@ void ParkingPlaceBehavior::xfer( Xfer *xfer )
 	}
 
 	// spaces info count and data
-	UnsignedByte spacesCount = m_spaces.size();
-	xfer->xferUnsignedByte( &spacesCount );
+	UnsignedInt spacesCount = xferParkingCount(xfer, version, static_cast<UnsignedInt>(m_spaces.size()));
 	if( xfer->getXferMode() == XFER_SAVE )
 	{
 
@@ -983,6 +1030,8 @@ void ParkingPlaceBehavior::xfer( Xfer *xfer )
 
 			// reserved for exit
 			xfer->xferBool( &((*it).m_reservedForExit) );
+			if (version >= 4)
+				xfer->xferBool(&it->m_postponedRunwayReservationForTakeoff);
 
 		}
 
@@ -993,8 +1042,6 @@ void ParkingPlaceBehavior::xfer( Xfer *xfer )
 		Bool reservedForExit;
 
 		// read all elements
-		std::vector< ParkingPlaceInfo >::iterator it;
-		it = m_spaces.begin();
 		for( i = 0; i < spacesCount; ++i )
 		{
 
@@ -1003,15 +1050,20 @@ void ParkingPlaceBehavior::xfer( Xfer *xfer )
 
 			// read reserved flag
 			xfer->xferBool( &reservedForExit );
+			Bool postponed = false;
+			if (version >= 4)
+			{
+				xfer->xferBool(&postponed);
+				if (i == m_spaces.size() && physicalSpaceCount() != 0)
+					appendSharedSpace();
+			}
 
 			// store in vector if the vector does indeed still have room for this entry
-			if( it != m_spaces.end() )
+			if (i < m_spaces.size())
 			{
-
-				(*it).m_objectInSpace = objectID;
-				(*it).m_reservedForExit = reservedForExit;
-				++it;
-
+				m_spaces[i].m_objectInSpace = objectID;
+				m_spaces[i].m_reservedForExit = reservedForExit;
+				m_spaces[i].m_postponedRunwayReservationForTakeoff = postponed;
 			}
 
 		}
@@ -1070,8 +1122,7 @@ void ParkingPlaceBehavior::xfer( Xfer *xfer )
 	}
 
 	// healees
-	UnsignedByte healCount = m_healing.size();
-	xfer->xferUnsignedByte( &healCount );
+	UnsignedInt healCount = xferParkingCount(xfer, version, static_cast<UnsignedInt>(m_healing.size()));
 	if( xfer->getXferMode() == XFER_SAVE )
 	{
 

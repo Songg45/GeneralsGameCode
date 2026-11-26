@@ -209,7 +209,11 @@ private:
 	void resetWakeFrame();
 
 	ParkingPlaceInfo* findPPI(ObjectID id);
-	ParkingPlaceInfo* findEmptyPPI();
+	UnsignedInt physicalSpaceCount() const;
+	Bool canShareParking(const ThingTemplate* aircraft) const;
+	ParkingPlaceInfo* findEmptyPPI(Bool includeShared = false);
+	ParkingPlaceInfo& appendSharedSpace();
+	void releaseDoorIfEmpty(ExitDoorType door);
 
 	Coord3D m_heliRallyPoint;
 	Bool m_heliRallyPointExists;				///< Only move to the rally point if this is true
