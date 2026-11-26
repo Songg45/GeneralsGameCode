@@ -16,6 +16,7 @@ WEAPONS = r"Data\INI\Weapon.ini"
 MOVEMENT = r"Data\INI\Locomotor.ini"
 ALPHA_MOVEMENT = r"Data\INI\Locomotor\AuroraAlpha.ini"
 MOD_NAME = "00_AuroraAlphaTuning.big"
+ALPHA_STAT_MULTIPLIER = 8
 
 
 def read_ini_files(archive):
@@ -69,7 +70,7 @@ def tune(files):
     weapons = files[WEAPONS]
     plane = block(aircraft, "Object", "SupW_AmericaJetAurora")
     start, end = numeric_field(plane[0], "BuildTime").span(1)
-    tuned_plane = plane[0][:start] + "5.0" + plane[0][end:]
+    tuned_plane = plane[0][:start] + "1.0" + plane[0][end:]
 
     # Other factions use these locomotors too. Give the Alpha private copies.
     locomotors = []
@@ -81,14 +82,14 @@ def tune(files):
         private = f"SupW_Alpha{name}Locomotor"
         template = block(files[MOVEMENT], "Locomotor", original)[0]
         template = re.sub(r"^Locomotor[ \t]+\w+", f"Locomotor {private}", template, count=1)
-        template = scale_field(template, "Speed", 2)
-        locomotors.append(scale_field(template, "SpeedDamaged", 2))
+        template = scale_field(template, "Speed", ALPHA_STAT_MULTIPLIER)
+        locomotors.append(scale_field(template, "SpeedDamaged", ALPHA_STAT_MULTIPLIER))
         tuned_plane = tuned_plane[:binding.start(1)] + private + tuned_plane[binding.end(1):]
 
     blast = block(weapons, "Weapon", "SupW_FuelBombDetonationWeapon")
     tuned_blast = blast[0]
     for field in ("PrimaryDamage", "PrimaryDamageRadius", "ShockWaveRadius"):
-        tuned_blast = scale_field(tuned_blast, field, 2)
+        tuned_blast = scale_field(tuned_blast, field, ALPHA_STAT_MULTIPLIER)
 
     return {
         AIRCRAFT: aircraft[:plane.start()] + tuned_plane + aircraft[plane.end():],
