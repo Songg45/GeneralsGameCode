@@ -485,16 +485,16 @@ void GameLogic::reset()
 	m_rankPointsToAddAtGameStart = 0;
 }
 
-static Object * placeObjectAtPosition(Int slotNum, AsciiString objectTemplateName, Coord3D& pos, Player *pPlayer,
-																	const PlayerTemplate *pTemplate)
+static Object * placeObjectAtPosition(AsciiString objectTemplateName, Coord3D& pos, Player *pPlayer)
 {
 	const ThingTemplate* btt = TheThingFactory->findTemplate(objectTemplateName);
 
 	DEBUG_ASSERTCRASH(btt, ("TheThingFactory didn't find a template in placeObjectAtPosition()") );
+	if (!btt)
+		return nullptr;
 
 	Object *obj = TheThingFactory->newObject( btt, pPlayer->getDefaultTeam() );
-	DEBUG_ASSERTCRASH(obj, ("TheThingFactory didn't give me a valid Object for player %d's (%ls) starting building",
-		slotNum, pTemplate->getDisplayName().str()));
+	DEBUG_ASSERTCRASH(obj, ("Could not place %s for player %d", objectTemplateName.str(), pPlayer->getPlayerIndex()));
 	if (obj)
 	{
 		obj->setOrientation(obj->getTemplate()->getPlacementViewAngle());
@@ -533,6 +533,61 @@ static Object * placeObjectAtPosition(Int slotNum, AsciiString objectTemplateNam
 	return obj;
 }
 
+static void collectWorkerSpawnAnchors(Object *obj, void *data)
+{
+	if (obj->isEffectivelyDead() || obj->isDestroyed() || obj->isOffMap() || obj->getContainedBy() ||
+			obj->testStatus(OBJECT_STATUS_SOLD) || obj->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION))
+		return;
+
+	if (obj->isKindOf(KINDOF_STRUCTURE) || obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_VEHICLE))
+		static_cast<std::vector<Object*>*>(data)->push_back(obj);
+}
+
+static Int workerSpawnPriority(const Object *obj)
+{
+	if (obj->isKindOf(KINDOF_COMMANDCENTER))
+		return 0;
+	return obj->isKindOf(KINDOF_STRUCTURE) ? 1 : 2;
+}
+
+static bool preferWorkerSpawnAnchor(const Object *a, const Object *b)
+{
+	const Int aPriority = workerSpawnPriority(a);
+	const Int bPriority = workerSpawnPriority(b);
+	return aPriority == bPriority ? a->getID() < b->getID() : aPriority < bPriority;
+}
+
+static void grantPeriodicWorkers()
+{
+	for (Int i = 0; i < ThePlayerList->getPlayerCount(); ++i)
+	{
+		Player *player = ThePlayerList->getNthPlayer(i);
+		if (!player->isPlayerActive() || !player->isPlayableSide() || !player->getDefaultTeam())
+			continue;
+
+		std::vector<Object*> anchors;
+		player->iterateObjects(collectWorkerSpawnAnchors, &anchors);
+		std::sort(anchors.begin(), anchors.end(), preferWorkerSpawnAnchor);
+		for (std::vector<Object*>::iterator it = anchors.begin(); it != anchors.end(); ++it)
+		{
+			Object *anchor = *it;
+			FindPositionOptions options;
+			options.flags = FPF_CLEAR_CELLS_ONLY;
+			options.startAngle = anchor->getOrientation();
+			options.minRadius = anchor->getGeometryInfo().getBoundingCircleRadius();
+			options.maxRadius = options.minRadius + 12 * PATHFIND_CELL_SIZE;
+			Coord3D pos;
+			if (!ThePartitionManager->findPositionAround(anchor->getPosition(), &options, &pos))
+				continue;
+
+			Object *worker = placeObjectAtPosition("GLAInfantryWorker", pos, player);
+			if (worker)
+				player->onUnitCreated(nullptr, worker);
+			break;
+		}
+	}
+}
+
 static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot *pSlot, Player *pPlayer, const PlayerTemplate *pTemplate)
 {
 	Int startPos = pSlot->getStartPos();
@@ -559,7 +614,7 @@ static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot *pSlot, P
 		return;
 
 	DEBUG_LOG(("Placing starting building at waypoint %s", waypointName.str()));
-	Object *conYard = placeObjectAtPosition(slotNum, buildingTemplateName, pos, pPlayer, pTemplate);
+	Object *conYard = placeObjectAtPosition(buildingTemplateName, pos, pPlayer);
 
 	if (!conYard)
 		return;
@@ -591,7 +646,7 @@ static void placeNetworkBuildingsForPlayer(Int slotNum, const GameSlot *pSlot, P
 			Bool foundPos = ThePartitionManager->findPositionAround(&pos, &options, &objPos);
 			if (foundPos)
 			{
-				Object *unit = placeObjectAtPosition(slotNum, objName, objPos, pPlayer, pTemplate);
+				Object *unit = placeObjectAtPosition(objName, objPos, pPlayer);
 				if (unit) {
 					pPlayer->onUnitCreated(nullptr, unit);
 				}
@@ -3948,6 +4003,10 @@ void GameLogic::update()
 	if (!m_startNewGame)
 	{
 		m_frame++;
+		// The match frame is saved and restored, so reloading preserves the grant schedule.
+		const UnsignedInt workerInterval = 15 * 60 * LOGICFRAMES_PER_SECOND;
+		if (m_frame != 0 && m_frame % workerInterval == 0 && isInInteractiveGame())
+			grantPeriodicWorkers();
 		m_hasUpdated = TRUE;
 	}
 }
